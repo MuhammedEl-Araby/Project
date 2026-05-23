@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -7,6 +8,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, r2_score
 from scipy.stats import norm
+from PIL import Image, ImageDraw, ImageFont
 import base64
 import os
 
@@ -18,12 +20,44 @@ import os
 st.set_page_config(
     page_title="SCADA Dynamic Pricing & Smart Meter Simulator",
     page_icon="⚡",
-    layout="wide",
-    menu_items={
-        "Get Help": None,
-        "Report a bug": None,
-        "About": "SCADA Dynamic Pricing & Smart Meter Simulator"
-    }
+    layout="wide"
+)
+
+
+# =========================================================
+# DISABLE STREAMLIT CLEAR-CACHE SHORTCUT BEHAVIOR
+# =========================================================
+# This keeps normal copy behavior but stops Streamlit from interpreting Ctrl/Cmd+C
+# or plain "c" as a clear-cache shortcut when the app body has focus.
+
+components.html(
+    """
+    <script>
+    (function () {
+        const isEditable = (el) => {
+            if (!el) return false;
+            const tag = (el.tagName || "").toLowerCase();
+            return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+        };
+
+        window.parent.document.addEventListener("keydown", function(e) {
+            const key = (e.key || "").toLowerCase();
+            const target = e.target;
+
+            if ((e.ctrlKey || e.metaKey) && key === "c") {
+                e.stopImmediatePropagation();
+                return true;
+            }
+
+            if (!e.ctrlKey && !e.metaKey && !e.altKey && key === "c" && !isEditable(target)) {
+                e.stopImmediatePropagation();
+                return true;
+            }
+        }, true);
+    })();
+    </script>
+    """,
+    height=0
 )
 
 
@@ -114,51 +148,17 @@ font-size: 28px;
 font-weight: 800;
 }}
 
-.ac-plan-container {{
-position: relative;
-width: 100%;
-max-width: 1200px;
-margin: auto;
-border-radius: 18px;
-overflow: hidden;
-border: 2px solid rgba(255,255,255,0.25);
-box-shadow: 0 0 25px rgba(0,0,0,0.55);
+.manual-box {{
+background: rgba(255,255,255,0.08);
+border: 1px solid rgba(255,255,255,0.16);
+border-radius: 16px;
+padding: 18px;
+margin-bottom: 14px;
 }}
 
-.ac-plan-container img {{
-width: 100%;
-display: block;
-}}
-
-.ac-marker {{
-position: absolute;
-transform: translate(-50%, -50%);
-font-weight: 900;
-font-size: 44px;
-line-height: 1;
-text-shadow: 0 0 8px black, 0 0 14px black;
-z-index: 10;
-}}
-
-.ac-working {{
-color: #00ff66;
-}}
-
-.ac-disconnected {{
-color: #ff2222;
-}}
-
-.ac-label {{
-position: absolute;
-transform: translate(-50%, -50%);
-font-weight: 900;
-font-size: 18px;
-background: rgba(0,0,0,0.65);
-color: yellow;
-border: 1px solid rgba(255,255,255,0.35);
-border-radius: 10px;
-padding: 2px 8px;
-z-index: 11;
+.small-muted {{
+opacity: 0.82;
+font-size: 14px;
 }}
 
 </style>
@@ -237,7 +237,7 @@ if "appliance_config" not in st.session_state:
             "Critical": False,
             "User Priority": 5,
             "Company Priority": 3,
-            "Preserve Minimum Units": 1
+            "Preserve Minimum Units": 0
         },
         {
             "Appliance": "Heavy Machines",
@@ -259,7 +259,7 @@ if "refuse_disconnect" not in st.session_state:
     st.session_state.refuse_disconnect = False
 
 if "climate_mode" not in st.session_state:
-    st.session_state.climate_mode = "Cooling Mode"
+    st.session_state.climate_mode = "Hot Summer - Cooling Priority"
 
 if "mandatory_reduction_percent" not in st.session_state:
     st.session_state.mandatory_reduction_percent = 20
@@ -267,8 +267,8 @@ if "mandatory_reduction_percent" not in st.session_state:
 if "voluntary_reduction_percent" not in st.session_state:
     st.session_state.voluntary_reduction_percent = 35
 
-if "ac_unit_status" not in st.session_state:
-    st.session_state.ac_unit_status = {
+if "ac_unit_states" not in st.session_state:
+    st.session_state.ac_unit_states = {
         "AC 1": True,
         "AC 2": True,
         "AC 3": True,
@@ -277,17 +277,17 @@ if "ac_unit_status" not in st.session_state:
         "AC 6": True
     }
 
-if "ac_marker_positions" not in st.session_state:
-    # Percent positions on image.
-    # You can adjust these from Real Life Simulation page to match ACs.png exactly.
-    st.session_state.ac_marker_positions = pd.DataFrame([
-        {"AC": "AC 1", "X %": 18, "Y %": 25},
-        {"AC": "AC 2", "X %": 38, "Y %": 25},
-        {"AC": "AC 3", "X %": 62, "Y %": 25},
-        {"AC": "AC 4", "X %": 82, "Y %": 25},
-        {"AC": "AC 5", "X %": 35, "Y %": 70},
-        {"AC": "AC 6", "X %": 68, "Y %": 70},
-    ])
+if "ac_overlay_positions" not in st.session_state:
+    # Edit these coordinates after checking your ACs.png image.
+    # Coordinates are measured in pixels from top-left of the image.
+    st.session_state.ac_overlay_positions = {
+        "AC 1": {"x": 220, "y": 150},
+        "AC 2": {"x": 390, "y": 150},
+        "AC 3": {"x": 560, "y": 150},
+        "AC 4": {"x": 220, "y": 340},
+        "AC 5": {"x": 390, "y": 340},
+        "AC 6": {"x": 560, "y": 340},
+    }
 
 
 # =========================================================
@@ -306,19 +306,23 @@ BONUS_RATE = 0.10
 # DATA GENERATION
 # =========================================================
 
-def generate_training_data(n=5000):
+def generate_training_data(n=3000):
     """
-    Synthetic training data with wider ranges.
-    This prevents the model from being limited to only small household values.
+    Synthetic dataset for demonstration.
+    The ranges are intentionally wide so the model can still respond to large values.
+    Nothing here caps the user's manual input.
     """
+
     np.random.seed(42)
 
-    lamps = np.random.randint(1, 301, n)
-    acs = np.random.randint(0, 51, n)
-    washing = np.random.randint(0, 31, n)
-    heavy_machines = np.random.randint(0, 51, n)
-    occupants = np.random.randint(1, 101, n)
-    house_size = np.random.randint(20, 5001, n)
+    lamps = np.random.randint(1, 120, n)
+    acs = np.random.randint(0, 30, n)
+    washing = np.random.randint(0, 25, n)
+    heavy_machines = np.random.randint(0, 35, n)
+    occupants = np.random.randint(1, 80, n)
+    house_size = np.random.randint(40, 2500, n)
+
+    gaussian_randomness = np.random.normal(0, 0.75, n)
 
     baseline = (
         0.22 * lamps +
@@ -327,7 +331,7 @@ def generate_training_data(n=5000):
         1.55 * heavy_machines +
         0.32 * occupants +
         0.010 * house_size +
-        np.random.normal(0, 0.45, n)
+        gaussian_randomness
     )
 
     baseline = np.clip(baseline, 0.5, None)
@@ -346,9 +350,10 @@ def generate_training_data(n=5000):
 
 
 # =========================================================
-# MODEL TRAINING WITHOUT STREAMLIT CACHE
+# MODEL TRAINING
 # =========================================================
 
+@st.cache_resource
 def train_model():
     df = generate_training_data()
 
@@ -365,6 +370,7 @@ def train_model():
     model = RandomForestRegressor(
         n_estimators=300,
         max_depth=14,
+        min_samples_leaf=2,
         random_state=42
     )
 
@@ -380,69 +386,25 @@ def train_model():
     return model, metrics, df
 
 
-if "trained_model_bundle" not in st.session_state:
-    st.session_state.trained_model_bundle = train_model()
-
-model, metrics, training_df = st.session_state.trained_model_bundle
-
-mean_usage = training_df["historical_baseline_kwh"].mean()
-std_usage = training_df["historical_baseline_kwh"].std()
-
-
-# =========================================================
-# UNLIMITED BASELINE PREDICTION
-# =========================================================
-
-def predict_baseline_unlimited(model, input_df):
-    """
-    Random Forest models are not naturally good at extrapolating far outside
-    their training range. This function allows any user input while still
-    adding a logical correction if the input exceeds the synthetic dataset range.
-    """
-    row = input_df.iloc[0].astype(float)
-
-    capped = row.copy()
-    caps = {
-        "lamps": 300,
-        "acs": 50,
-        "washing_machine": 30,
-        "heavy_machines": 50,
-        "occupants": 100,
-        "house_size": 5000
-    }
-
-    for col, cap in caps.items():
-        capped[col] = min(capped[col], cap)
-
-    capped_df = pd.DataFrame([capped])
-    base_prediction = float(model.predict(capped_df)[0])
-
-    extra = 0
-    extra += max(row["lamps"] - caps["lamps"], 0) * 0.22
-    extra += max(row["acs"] - caps["acs"], 0) * 1.15
-    extra += max(row["washing_machine"] - caps["washing_machine"], 0) * 0.90
-    extra += max(row["heavy_machines"] - caps["heavy_machines"], 0) * 1.55
-    extra += max(row["occupants"] - caps["occupants"], 0) * 0.32
-    extra += max(row["house_size"] - caps["house_size"], 0) * 0.010
-
-    return base_prediction + extra
-
-
 # =========================================================
 # HOUSEHOLD INPUT
 # =========================================================
 
-def adaptive_capacity_limits(size):
+def dynamic_capacity_limits(size):
     """
-    Practical warning limits only.
-    They do NOT block calculation.
+    Advisory limits only.
+    They do NOT restrict calculation.
     """
-    washing_limit = max(2, int(size / 70))
-    heavy_limit = max(1, int(size / 90))
-    ac_limit = max(1, int(size / 35))
-    lamp_limit = max(10, int(size / 4))
 
-    return washing_limit, heavy_limit, ac_limit, lamp_limit
+    size = max(float(size), 1)
+
+    return {
+        "washing_limit": max(1, round(size / 80)),
+        "heavy_limit": max(1, round(size / 120)),
+        "ac_limit": max(1, round(size / 35)),
+        "lamp_limit": max(10, round(size / 5)),
+        "occupant_limit": max(2, round(size / 12))
+    }
 
 
 def household_input(title, default_lamps, default_acs, default_washing,
@@ -492,37 +454,38 @@ def household_input(title, default_lamps, default_acs, default_washing,
         step=1
     )
 
-    washing_limit, heavy_limit, ac_limit, lamp_limit = adaptive_capacity_limits(size)
+    limits = dynamic_capacity_limits(size)
 
     logical_warnings = []
 
-    if washing > washing_limit:
+    if washing > limits["washing_limit"]:
         logical_warnings.append(
-            f"Washing machines are high for {size} m². Suggested practical limit is about "
-            f"{washing_limit}, but your entered value will still be fully calculated."
+            f"Washing machines are high for {size} m². Suggested advisory capacity is about "
+            f"{limits['washing_limit']} unit(s), but your entered value ({washing}) will still be fully calculated."
         )
 
-    if heavy > heavy_limit:
+    if heavy > limits["heavy_limit"]:
         logical_warnings.append(
-            f"Heavy machines are high for {size} m². Suggested practical limit is about "
-            f"{heavy_limit}, but your entered value will still be fully calculated."
+            f"Heavy machines are high for {size} m². Suggested advisory capacity is about "
+            f"{limits['heavy_limit']} unit(s), but your entered value ({heavy}) will still be fully calculated."
         )
 
-    if acs > ac_limit:
+    if acs > limits["ac_limit"]:
         logical_warnings.append(
-            f"AC count is high for {size} m². Suggested practical limit is about "
-            f"{ac_limit}, but your entered value will still be fully calculated."
+            f"AC count is high for {size} m². Suggested advisory capacity is about "
+            f"{limits['ac_limit']} unit(s), but your entered value ({acs}) will still be fully calculated."
         )
 
-    if lamps > lamp_limit:
+    if occupants > limits["occupant_limit"]:
         logical_warnings.append(
-            f"Lamps are high for {size} m². Suggested practical limit is about "
-            f"{lamp_limit}, but your entered value will still be fully calculated."
+            f"Occupants are high for {size} m². Suggested advisory capacity is about "
+            f"{limits['occupant_limit']} person(s), but your entered value ({occupants}) will still be fully calculated."
         )
 
-    if occupants > max(2, int(size / 10)):
+    if lamps > limits["lamp_limit"]:
         logical_warnings.append(
-            "Occupants are unusually high for the house size, but your entered value will still be calculated."
+            f"Lamps are high for {size} m². Suggested advisory capacity is about "
+            f"{limits['lamp_limit']} lamp(s), but your entered value ({lamps}) will still be fully calculated."
         )
 
     for warning in logical_warnings:
@@ -542,34 +505,16 @@ def household_input(title, default_lamps, default_acs, default_washing,
 # LOAD CALCULATION ENGINE
 # =========================================================
 
-def normalize_appliance_df(appliance_df):
+def calculate_current_connected_load(appliance_df):
     df = appliance_df.copy()
 
-    numeric_cols = [
-        "Quantity",
-        "Power per Unit kW",
-        "User Priority",
-        "Company Priority",
-        "Preserve Minimum Units"
-    ]
+    df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0)
+    df["Power per Unit kW"] = pd.to_numeric(df["Power per Unit kW"], errors="coerce").fillna(0)
+    df["Preserve Minimum Units"] = pd.to_numeric(df["Preserve Minimum Units"], errors="coerce").fillna(0)
 
-    bool_cols = [
-        "Connected",
-        "Disconnectable",
-        "Critical"
-    ]
-
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-    for col in bool_cols:
-        df[col] = df[col].fillna(False).astype(bool)
-
-    return df
-
-
-def calculate_current_connected_load(appliance_df):
-    df = normalize_appliance_df(appliance_df)
+    df["Quantity"] = df["Quantity"].clip(lower=0)
+    df["Power per Unit kW"] = df["Power per Unit kW"].clip(lower=0)
+    df["Preserve Minimum Units"] = df["Preserve Minimum Units"].clip(lower=0)
 
     df["Connected Load kW"] = np.where(
         df["Connected"],
@@ -578,6 +523,35 @@ def calculate_current_connected_load(appliance_df):
     )
 
     return df
+
+
+def sync_ac_quantity_with_real_life_page():
+    """
+    The Real Life Simulation page controls individual AC state.
+    This function updates the ACs row quantity according to the number of active AC units.
+    """
+
+    active_ac_count = sum(1 for state in st.session_state.ac_unit_states.values() if state)
+
+    df = st.session_state.appliance_config.copy()
+
+    if "ACs" in df["Appliance"].values:
+        df.loc[df["Appliance"] == "ACs", "Quantity"] = active_ac_count
+        df.loc[df["Appliance"] == "ACs", "Connected"] = active_ac_count > 0
+    else:
+        df.loc[len(df)] = {
+            "Appliance": "ACs",
+            "Quantity": active_ac_count,
+            "Power per Unit kW": 1.3,
+            "Connected": active_ac_count > 0,
+            "Disconnectable": True,
+            "Critical": False,
+            "User Priority": 5,
+            "Company Priority": 3,
+            "Preserve Minimum Units": 0
+        }
+
+    st.session_state.appliance_config = df
 
 
 def smart_meter_shed_load(
@@ -595,6 +569,9 @@ def smart_meter_shed_load(
     original_load = df["Connected Load kW"].sum()
 
     if original_load <= 0:
+        df["Disconnected Units"] = 0
+        df["Remaining Units"] = 0
+        df["Shed kW"] = 0
         return df, 0, 0, 0, "No active load"
 
     requested_reduction_kw = original_load * requested_reduction_percent / 100
@@ -617,7 +594,7 @@ def smart_meter_shed_load(
     if target_reduction_kw <= 0:
         df["Disconnected Units"] = 0
         df["Remaining Units"] = df["Quantity"]
-        df["Shed kW"] = 0
+        df["Shed kW"] = 0.0
         final_load = original_load
         achieved_reduction_percent = 0
         return df, original_load, final_load, achieved_reduction_percent, enforcement_status
@@ -652,7 +629,10 @@ def smart_meter_shed_load(
         appliance = row["Appliance"]
         preserve_minimum = float(row["Preserve Minimum Units"])
 
-        if appliance == "ACs" and climate_mode in ["Cooling Mode", "Heating Mode"]:
+        if climate_mode == "Hot Summer - Cooling Priority" and appliance == "ACs":
+            preserve_minimum = max(preserve_minimum, 1)
+
+        if climate_mode == "Cold Winter - Heating Priority" and appliance == "Water Heater":
             preserve_minimum = max(preserve_minimum, 1)
 
         max_disconnectable_units = max(quantity - preserve_minimum, 0)
@@ -717,7 +697,7 @@ def billing_engine(
         if premium_usage > 0:
             premium_charge = premium_usage * PREMIUM_PRESERVATION_RATE
             bill += premium_charge
-            status.append("Premium Load Preservation Pricing applied for usage above historical baseline.")
+            status.append("Premium Load Preservation Pricing applied for usage above baseline.")
 
         if achieved_reduction_percent < mandatory_reduction_percent:
             penalty = final_usage * 0.20
@@ -732,6 +712,9 @@ def billing_engine(
     if refused_disconnect and grid_stress:
         status.append("User refused smart meter disconnection. Premium convenience pricing applied.")
 
+    if not status:
+        status.append("Normal billing condition.")
+
     return {
         "Normal Usage kWh": normal_usage,
         "Premium Usage kWh": premium_usage,
@@ -745,72 +728,60 @@ def billing_engine(
 
 
 # =========================================================
-# AC PLAN HTML
+# IMAGE OVERLAY ENGINE
 # =========================================================
 
-def render_ac_plan():
-    ac_img = get_base64_image("ACs.png")
+def get_font(size=48):
+    font_candidates = [
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "arial.ttf"
+    ]
 
-    if ac_img is None:
-        st.error(
-            "ACs.png was not found. Put your HVAC plan image in the same folder as this Streamlit app "
-            "with the exact name: ACs.png"
-        )
-        return
+    for font_path in font_candidates:
+        if os.path.exists(font_path):
+            return ImageFont.truetype(font_path, size)
 
-    marker_html = ""
-
-    positions = st.session_state.ac_marker_positions.copy()
-
-    for _, row in positions.iterrows():
-        ac_name = row["AC"]
-        x = float(row["X %"])
-        y = float(row["Y %"])
-
-        is_working = st.session_state.ac_unit_status.get(ac_name, True)
-
-        symbol = "O" if is_working else "X"
-        css_class = "ac-working" if is_working else "ac-disconnected"
-
-        marker_html += f"""
-        <div class="ac-marker {css_class}" style="left:{x}%; top:{y}%;">{symbol}</div>
-        <div class="ac-label" style="left:{x}%; top:calc({y}% + 38px);">{ac_name}</div>
-        """
-
-    html = f"""
-    <div class="ac-plan-container">
-        <img src="data:image/png;base64,{ac_img}">
-        {marker_html}
-    </div>
-    """
-
-    st.markdown(html, unsafe_allow_html=True)
+    return ImageFont.load_default()
 
 
-def sync_ac_plan_to_appliance_config():
-    working_count = sum(1 for v in st.session_state.ac_unit_status.values() if v)
+def draw_centered_text(draw, xy, text, font, fill, outline_fill="black", outline_width=4):
+    x, y = xy
 
-    df = st.session_state.appliance_config.copy()
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font, stroke_width=outline_width)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+    except Exception:
+        w, h = draw.textsize(text, font=font)
 
-    ac_mask = df["Appliance"] == "ACs"
+    draw.text(
+        (x - w / 2, y - h / 2),
+        text,
+        font=font,
+        fill=fill,
+        stroke_width=outline_width,
+        stroke_fill=outline_fill
+    )
 
-    if ac_mask.any():
-        df.loc[ac_mask, "Quantity"] = working_count
-        df.loc[ac_mask, "Connected"] = working_count > 0
-    else:
-        df.loc[len(df)] = {
-            "Appliance": "ACs",
-            "Quantity": working_count,
-            "Power per Unit kW": 1.3,
-            "Connected": working_count > 0,
-            "Disconnectable": True,
-            "Critical": False,
-            "User Priority": 5,
-            "Company Priority": 3,
-            "Preserve Minimum Units": 1
-        }
 
-    st.session_state.appliance_config = df
+def render_ac_plan_overlay(image_path, ac_states, positions):
+    image = Image.open(image_path).convert("RGBA")
+    draw = ImageDraw.Draw(image)
+    font = get_font(54)
+
+    for ac_name, is_on in ac_states.items():
+        pos = positions.get(ac_name, {"x": 100, "y": 100})
+        x = int(pos["x"])
+        y = int(pos["y"])
+
+        symbol = "O" if is_on else "X"
+        color = "lime" if is_on else "red"
+
+        draw_centered_text(draw, (x, y), symbol, font, color)
+
+    return image
 
 
 # =========================================================
@@ -828,6 +799,16 @@ page = st.radio(
     ],
     horizontal=True
 )
+
+
+# =========================================================
+# MODEL LOAD
+# =========================================================
+
+model, metrics, training_df = train_model()
+
+mean_usage = training_df["historical_baseline_kwh"].mean()
+std_usage = training_df["historical_baseline_kwh"].std()
 
 
 # =========================================================
@@ -876,156 +857,291 @@ with st.sidebar:
 
 if page == "How To Use":
 
-    st.title("How To Use The Website - Manual Catalogue")
+    st.title("How To Use The Website")
 
     st.markdown("""
-    ## 1. Purpose of the Simulator
+<div class="manual-box">
 
-    This website is a research and educational simulation for a smart electrical distribution system.
+## 1. Website Purpose
 
-    It combines:
+This website is a training and research simulator for a smart electrical distribution system. It combines:
 
-    - Historical baseline estimation
-    - Dynamic pricing
-    - Peak event notification
-    - Smart meter override
-    - User priority control
-    - Company emergency priority control
-    - Load shedding
-    - Premium uninterrupted consumption pricing
-    - Real-life HVAC image simulation
+- Historical consumption baseline calculation
+- Dynamic pricing
+- Peak event simulation
+- Smart meter override
+- User priority control
+- Company emergency control
+- Load shedding
+- Real-life HVAC visual simulation
+- Billing and penalty/discount calculation
 
-    The website does not connect to a real smart meter or real SCADA system.
+The system is not a real utility SCADA system. It is a safe simulation that demonstrates how a company could manage load during high demand or physical line stress.
 
-    ---
+</div>
 
-    ## 2. Main Pages
+<div class="manual-box">
 
-    ### SCADA Control Center
+## 2. Main Operator Workflow
 
-    This is the main dashboard.
+A first-time user should follow this order:
 
-    Use it to:
+1. Open **Smart Meter Override Page**
+2. Choose whether the user or the company controls priority
+3. Decide which appliances are connected
+4. Decide which appliances are disconnectable
+5. Set priority numbers
+6. Open **Real Life Simulation**
+7. Turn AC units ON or OFF on the HVAC plan
+8. Open **SCADA Control Center**
+9. Activate or deactivate grid stress and peak event conditions
+10. Review the achieved load reduction
+11. Review the final bill and decision summary
 
-    1. Activate or deactivate grid stress.
-    2. Activate or deactivate a peak event.
-    3. Choose if the company is in growth mode.
-    4. Enable emergency enforcement.
-    5. Set the requested reduction percentage.
-    6. Set the mandatory minimum reduction percentage.
-    7. Enter household data.
-    8. Select Person A or Person B.
-    9. See final usage, load shedding, bill, and decision.
+</div>
 
-    ---
+<div class="manual-box">
 
-    ### Smart Meter Override Page
+## 3. SCADA Control Center
 
-    This page controls the smart meter logic.
+This is the main dashboard.
 
-    You can decide:
+It answers these questions:
 
-    - Which appliances are connected.
-    - Which appliances are disconnectable.
-    - Which appliances are critical.
-    - Which loads disconnect first.
-    - Whether user priority or company priority is used.
-    - Whether the user refuses all disconnection.
-    - Whether the building is in cooling or heating condition.
+- Is the grid under stress?
+- Is this a peak event?
+- How much reduction does the company request?
+- Is there a mandatory minimum reduction?
+- Did the user respond?
+- What is the user's baseline?
+- What was the original load?
+- What is the final load after disconnection?
+- Did the user satisfy the grid requirement?
+- What is the final bill?
 
-    Important:
+Important controls:
 
-    - Lower priority number means the load disconnects earlier.
-    - Critical loads will not disconnect.
-    - Lights are protected by default.
-    - If the user refuses disconnection, premium pricing is applied.
-    - If the grid is really stressed and the user ignores the request, emergency enforcement can still happen.
+### Real Stress On Line
 
-    ---
+This means the problem is physical, not only financial. The line may be overloaded.
 
-    ### Real Life Simulation
+### Peak Usage Event
 
-    This page is for the HVAC plan image.
+This means demand is high. Dynamic tariffs may apply.
 
-    Put your image in the project folder with this exact name:
+### New Company Growth Mode
 
-    **ACs.png**
+This is the opposite situation. The company wants to increase average usage. A bonus may be applied.
 
-    The page will display the plan and place:
+### Emergency Enforcement Enabled
 
-    - **O** on working AC units
-    - **X** on disconnected AC units
+This allows the company to override the user's refusal if the line is really stressed.
 
-    You can manually change each AC:
+</div>
 
-    - AC 1 working or disconnected
-    - AC 2 working or disconnected
-    - AC 3 working or disconnected
-    - AC 4 working or disconnected
-    - AC 5 working or disconnected
-    - AC 6 working or disconnected
+<div class="manual-box">
 
-    If you change AC 3 from disconnected to working, the X will disappear and O will appear automatically.
+## 4. Smart Meter Override Page
 
-    You can also edit the marker positions using X % and Y % if the symbols are not exactly on top of the ACs in your plan.
+This page controls the appliance table.
 
-    ---
+Each row is one appliance type.
 
-    ### AI & Model Details
+### Quantity
 
-    This page explains:
+Number of units.
 
-    - What the synthetic dataset means
-    - Why random numbers are used
-    - What Gaussian randomness means
-    - What R² means
-    - What MAE means
-    - How the historical baseline estimation works
+Example: 6 ACs, 10 lights, 2 heavy machines.
 
-    ---
+### Power per Unit kW
 
-    ## 3. How to Use the Smart Meter Override
+Power consumed by one unit.
 
-    Example:
+Example: if one AC consumes 1.3 kW and there are 6 ACs, total AC load is 7.8 kW.
 
-    You want the system to disconnect power sockets first, then heater, then hand dryer.
+### Connected
 
-    Set priorities like this:
+If unchecked, the appliance is already off and does not consume power.
 
-    - Power Sockets: User Priority = 1
-    - Water Heater: User Priority = 2
-    - Hand Dryer: User Priority = 3
-    - Washing Machine: User Priority = 4
-    - ACs: User Priority = 5
-    - Heavy Machines: User Priority = 6
+### Disconnectable
 
-    Keep lights protected by setting:
+If checked, SCADA is allowed to disconnect it.
 
-    - Disconnectable = False
-    - Critical = True
+### Critical
 
-    ---
+If checked, the appliance is protected.
 
-    ## 4. How to Use Real Life AC Simulation
+Example: lights may be critical and should not be disconnected.
 
-    1. Go to **Real Life Simulation**.
-    2. Make sure **ACs.png** exists in the app folder.
-    3. Use the AC checkboxes to select which ACs are working.
-    4. Disconnected ACs will show red X.
-    5. Working ACs will show green O.
-    6. If symbol positions are wrong, open "Marker Position Calibration" and adjust X % / Y %.
-    7. Press "Sync AC Plan With Smart Meter" if you want the working AC count to affect the SCADA calculation.
+### User Priority
 
-    ---
+Lower number disconnects first when user priority is selected.
 
-    ## 5. Important Notes
+### Company Priority
 
-    - This is a simulator, not a real protection relay.
-    - Premium payment can preserve comfort only if the physical grid can handle it.
-    - If the line is in real danger, the company can enforce minimum reduction.
-    - Warnings about too many machines do not block calculation.
-    - You are free to enter any number.
-    """)
+Lower number disconnects first when company priority is selected.
+
+### Preserve Minimum Units
+
+Minimum number of units that should remain working.
+
+Example: if AC quantity is 6 and preserve minimum is 2, then only 4 ACs can be disconnected.
+
+</div>
+
+<div class="manual-box">
+
+## 5. Real Life Simulation Page
+
+This page simulates a real HVAC plan.
+
+You should place an image named:
+
+**ACs.png**
+
+in the same GitHub/project folder as your Streamlit app.
+
+The page shows six AC controls:
+
+- AC 1
+- AC 2
+- AC 3
+- AC 4
+- AC 5
+- AC 6
+
+When an AC is working, the image shows:
+
+**O**
+
+When an AC is disconnected, the image shows:
+
+**X**
+
+This is more functional than taking many screenshots because the same image updates live during operation.
+
+If the X or O is not exactly on top of the AC symbol, open the coordinates editor on the page and adjust the x/y values.
+
+</div>
+
+<div class="manual-box">
+
+## 6. Priority Logic
+
+The smart meter starts disconnecting appliances from the lowest priority number.
+
+Example:
+
+- Power Sockets priority 1
+- Water Heater priority 2
+- Hand Dryer priority 3
+- Washing Machine priority 4
+
+This means power sockets disconnect first.
+
+If the policy is **Company Priority**, the company priority column is used.
+
+If the policy is **Manual User Priority**, the user priority column is used.
+
+</div>
+
+<div class="manual-box">
+
+## 7. Refusing Disconnection
+
+The user can refuse all disconnection.
+
+If there is no real line stress, this may simply cause premium pricing.
+
+If there is real physical stress and the user ignores the company request until the deadline, emergency enforcement may still disconnect the minimum required load.
+
+This represents the idea that paying more cannot always protect comfort if the line itself may be damaged.
+
+</div>
+
+<div class="manual-box">
+
+## 8. Climate Mode
+
+There are three modes:
+
+### Hot Summer - Cooling Priority
+
+The system tries to preserve at least one AC.
+
+### Normal Operation
+
+No seasonal protection is added.
+
+### Cold Winter - Heating Priority
+
+The system tries to preserve at least one water heater.
+
+This makes the simulator more realistic than only having summer mode.
+
+</div>
+
+<div class="manual-box">
+
+## 9. Billing Logic
+
+The bill is calculated using:
+
+- Normal usage
+- Premium usage above baseline
+- Premium preservation pricing
+- Penalty if mandatory reduction is not achieved
+- Discount if mandatory reduction is achieved
+- Bonus if growth mode is active
+
+The baseline is used as the normal expected consumption level for the selected client.
+
+</div>
+
+<div class="manual-box">
+
+## 10. Graphs
+
+### Load Shedding Graph
+
+Compares original connected load and disconnected load.
+
+### Usage & Billing Graph
+
+Compares baseline, requested usage, final usage, and billing components.
+
+### Baseline Bell Curve
+
+Shows where the selected client sits compared with the simulated population.
+
+### Priority Comparison
+
+Compares user priority and company priority for all appliance categories.
+
+</div>
+
+<div class="manual-box">
+
+## 11. Common Troubleshooting
+
+### The X/O marks are not on the right place
+
+Go to Real Life Simulation and adjust the coordinate table.
+
+### AC quantity looks changed in the appliance table
+
+The Real Life Simulation page updates the AC quantity according to how many ACs are ON.
+
+### Warning messages appear for high machines
+
+They are only warnings. The calculation still includes the full number you typed.
+
+### Copy shortcut opens clear cache message
+
+This version includes a keyboard interception script to stop that behavior while keeping copy usable.
+
+</div>
+    """, unsafe_allow_html=True)
 
     st.stop()
 
@@ -1036,91 +1152,123 @@ if page == "How To Use":
 
 if page == "AI & Model Details":
 
-    st.title("AI Model & Dataset Information")
+    st.title("Model & Dataset Information")
 
     st.markdown("""
-    ## Dataset
+<div class="manual-box">
 
-    The dataset is synthetic, meaning it is generated inside the program for simulation and education.
+## Dataset
 
-    It contains different building and household cases using these features:
+The dataset is synthetic. This means it is generated inside the program for training and demonstration.
 
-    - Lamps
-    - ACs
-    - Washing machines
-    - Heavy machines
-    - Occupants
-    - House size
+The features are:
 
-    The model estimates a historical baseline in kWh.
+- Lamps
+- ACs
+- Washing machines
+- Heavy machines
+- Occupants
+- House size
 
-    ---
+The output is:
 
-    ## Why Random Numbers Are Used
+- Historical baseline consumption in kWh
 
-    Real consumption is never perfectly fixed.
+The purpose is to simulate how a utility company might estimate a user's normal historical consumption level.
 
-    Two homes with the same number of ACs and lamps may not consume exactly the same energy because of:
+</div>
 
-    - Different usage habits
-    - Different weather
-    - Different insulation
-    - Different appliance efficiency
-    - Different operating hours
+<div class="manual-box">
 
-    So the dataset adds random variation to make the simulation more realistic.
+## Random Forest Regressor
 
-    ---
+The model used here is a **Random Forest Regressor**.
 
-    ## Gaussian Randomness
+A random forest is a group of many decision trees.
 
-    The model adds a small random noise using a normal distribution.
+Each tree gives a prediction, then the model averages the trees to produce a final result.
 
-    This is also called Gaussian randomness.
+This is useful because:
 
-    A normal distribution means:
+- It handles nonlinear behavior
+- It is more stable than one decision tree
+- It can work well with mixed household features
+- It is suitable for regression, which means predicting a number
 
-    - Most random errors are small
-    - Very large random errors are rare
-    - The distribution forms a bell curve
+</div>
 
-    This helps the synthetic data look closer to real-world measurement variation.
+<div class="manual-box">
 
-    ---
+## MAE
 
-    ## MAE Meaning
+**MAE** means **Mean Absolute Error**.
 
-    MAE means **Mean Absolute Error**.
+It tells us the average size of the prediction error.
 
-    It tells you the average prediction error in kWh.
+Example:
 
-    Example:
+If MAE = 0.50 kWh, then the prediction is wrong by about 0.50 kWh on average.
 
-    If MAE = 1.50 kWh, then on average the model prediction is about 1.50 kWh away from the target value.
+Lower MAE is better.
 
-    Lower MAE is better.
+</div>
 
-    ---
+<div class="manual-box">
 
-    ## R² Meaning
+## R²
 
-    R² means **Coefficient of Determination**.
+**R²** means **Coefficient of Determination**.
 
-    It shows how much of the data pattern is explained by the model.
+It shows how much of the variation in the data is explained by the model.
 
-    - R² close to 1.00 means strong prediction performance.
-    - R² close to 0.00 means weak prediction performance.
-    - Negative R² means the model is worse than using the average.
+Typical interpretation:
 
-    ---
+- R² close to 1.00 means strong model fit
+- R² close to 0.00 means weak model fit
+- Negative R² means the model is worse than a simple average
 
-    ## Important Note
+</div>
 
-    The baseline is called an estimated historical baseline because, in a real company,
-    this value would come from confidential customer history and smart meter records.
+<div class="manual-box">
 
-    In this simulator, we estimate it using the synthetic model.
-    """)
+## Gaussian Randomness
+
+The dataset includes Gaussian randomness.
+
+Gaussian means normal distribution, also called a bell curve.
+
+It is added because real electricity consumption is not perfectly fixed.
+
+Two houses with the same number of ACs and appliances may still consume slightly different energy because of:
+
+- User behavior
+- Weather
+- Appliance efficiency
+- Occupancy schedule
+- Random daily variation
+
+The random term makes the simulation more realistic.
+
+</div>
+
+<div class="manual-box">
+
+## Confidential Baseline Idea
+
+In a real system, the baseline should not be shown as "AI prediction" to the customer.
+
+A better operational name is:
+
+**Historical Consumption Baseline**
+
+or
+
+**Customer Historical Consumption Profile**
+
+This makes it look like it came from historical usage records, not from a visible AI tool.
+
+</div>
+    """, unsafe_allow_html=True)
 
     st.subheader("Synthetic Dataset Preview")
     st.dataframe(training_df.head(150), use_container_width=True)
@@ -1159,7 +1307,7 @@ if page == "AI & Model Details":
     )
 
     fig.update_layout(
-        title="Baseline Consumption Bell Curve",
+        title="Historical Baseline Consumption Bell Curve",
         xaxis_title="Historical Baseline kWh",
         yaxis_title="Probability Density",
         template="plotly_dark",
@@ -1179,78 +1327,116 @@ if page == "AI & Model Details":
 
 if page == "Real Life Simulation":
 
-    st.title("Real Life Simulation - HVAC Plan")
-
+    st.title("Real Life Simulation")
     st.warning(
-        "This page is a trial SCADA-style visual simulation. "
-        "It edits the visual status on the HVAC plan while the app is running."
+        "This page simulates a real HVAC plan. Put your plan image in the project folder with the exact name ACs.png."
     )
 
     st.markdown("""
-    ## HVAC Plan Logic
+<div class="scada-card">
+<div class="big-status">HVAC Plan Live Overlay</div>
+Use the switches below to turn each AC ON or OFF. The image updates immediately:
+<br><br>
+<b>O</b> = working AC<br>
+<b>X</b> = disconnected AC
+</div>
+    """, unsafe_allow_html=True)
 
-    The image file must be named:
+    st.subheader("AC Operating State")
 
-    **ACs.png**
+    ac_cols = st.columns(6)
 
-    Symbols:
-
-    - Green **O** = AC is working
-    - Red **X** = AC is disconnected
-
-    If you change an AC again, the old X or O is automatically replaced.
-    """)
-
-    st.divider()
-
-    left, right = st.columns([1, 2])
-
-    with left:
-        st.subheader("AC Unit Override")
-
-        for ac_name in list(st.session_state.ac_unit_status.keys()):
-            st.session_state.ac_unit_status[ac_name] = st.checkbox(
-                f"{ac_name} Working",
-                value=st.session_state.ac_unit_status[ac_name]
+    for idx, ac_name in enumerate(st.session_state.ac_unit_states.keys()):
+        with ac_cols[idx]:
+            st.session_state.ac_unit_states[ac_name] = st.toggle(
+                ac_name,
+                value=st.session_state.ac_unit_states[ac_name],
+                key=f"toggle_{ac_name}"
             )
 
-        working_acs = [k for k, v in st.session_state.ac_unit_status.items() if v]
-        disconnected_acs = [k for k, v in st.session_state.ac_unit_status.items() if not v]
+    sync_ac_quantity_with_real_life_page()
 
-        st.metric("Working ACs", len(working_acs))
-        st.metric("Disconnected ACs", len(disconnected_acs))
+    active_ac_count = sum(1 for state in st.session_state.ac_unit_states.values() if state)
+    disconnected_ac_count = len(st.session_state.ac_unit_states) - active_ac_count
 
-        st.write("Working:", ", ".join(working_acs) if working_acs else "None")
-        st.write("Disconnected:", ", ".join(disconnected_acs) if disconnected_acs else "None")
-
-        if st.button("Sync AC Plan With Smart Meter"):
-            sync_ac_plan_to_appliance_config()
-            st.success("AC working count has been synced with Smart Meter Override configuration.")
-
-    with right:
-        st.subheader("Live HVAC Plan")
-        render_ac_plan()
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Working ACs", active_ac_count)
+    m2.metric("Disconnected ACs", disconnected_ac_count)
+    m3.metric("Synced AC Quantity", active_ac_count)
 
     st.divider()
 
-    with st.expander("Marker Position Calibration"):
+    image_path = "ACs.png"
+
+    if not os.path.exists(image_path):
+        st.error(
+            "ACs.png was not found. Add ACs.png to the same folder as this Streamlit file, "
+            "then rerun the app."
+        )
+        st.stop()
+
+    with st.expander("Edit X/O Positions on the Plan"):
         st.info(
-            "If O/X symbols are not exactly on the AC symbols in the image, "
-            "adjust X % and Y %. These values are percentages of the image width and height."
+            "Adjust x and y until each O/X appears exactly on top of the AC symbol in your plan. "
+            "The top-left corner of the image is x=0, y=0."
         )
 
-        edited_positions = st.data_editor(
-            st.session_state.ac_marker_positions,
+        position_rows = []
+
+        for ac_name, pos in st.session_state.ac_overlay_positions.items():
+            position_rows.append({
+                "AC": ac_name,
+                "x": int(pos["x"]),
+                "y": int(pos["y"])
+            })
+
+        pos_df = pd.DataFrame(position_rows)
+
+        edited_pos_df = st.data_editor(
+            pos_df,
             use_container_width=True,
             num_rows="fixed",
             column_config={
-                "AC": st.column_config.TextColumn("AC"),
-                "X %": st.column_config.NumberColumn("X %", min_value=0, max_value=100, step=1),
-                "Y %": st.column_config.NumberColumn("Y %", min_value=0, max_value=100, step=1),
+                "AC": st.column_config.TextColumn("AC", disabled=True),
+                "x": st.column_config.NumberColumn("x", step=1),
+                "y": st.column_config.NumberColumn("y", step=1)
             }
         )
 
-        st.session_state.ac_marker_positions = edited_positions
+        for _, row in edited_pos_df.iterrows():
+            st.session_state.ac_overlay_positions[row["AC"]] = {
+                "x": int(row["x"]),
+                "y": int(row["y"])
+            }
+
+    overlay_image = render_ac_plan_overlay(
+        image_path=image_path,
+        ac_states=st.session_state.ac_unit_states,
+        positions=st.session_state.ac_overlay_positions
+    )
+
+    st.image(
+        overlay_image,
+        caption="Live HVAC SCADA Overlay",
+        use_container_width=True
+    )
+
+    st.subheader("Real Life Simulation Status Table")
+
+    status_df = pd.DataFrame([
+        {
+            "AC Unit": ac_name,
+            "State": "Working" if state else "Disconnected",
+            "Symbol": "O" if state else "X"
+        }
+        for ac_name, state in st.session_state.ac_unit_states.items()
+    ])
+
+    st.dataframe(status_df, use_container_width=True)
+
+    st.success(
+        "The AC status is now synchronized with the ACs row in the Smart Meter Override Page."
+    )
 
     st.stop()
 
@@ -1264,20 +1450,20 @@ if page == "Smart Meter Override Page":
     st.title("Smart Meter Override Page")
     st.warning(
         "This page lets the client manually override the smart meter priority rules. "
-        "The user's choices affect the SCADA Control Center simulation."
+        "The user's choices will affect the SCADA Control Center simulation."
     )
 
     st.markdown("""
     ## Manual Control Philosophy
 
-    You can decide:
+    You have full access to decide:
 
     - Which appliance is connected or disconnected
     - Which appliance disconnects first during peak events
     - Which appliance must never disconnect
     - Whether the company priority or user priority should be used
     - Whether you refuse all disconnections and pay premium pricing
-    - Whether AC operation is cooling mode or heating mode
+    - Whether the operating condition is summer cooling, normal, or winter heating
     """)
 
     st.divider()
@@ -1301,19 +1487,25 @@ if page == "Smart Meter Override Page":
         )
 
     with col_c:
+        climate_options = [
+            "Hot Summer - Cooling Priority",
+            "Normal Operation",
+            "Cold Winter - Heating Priority"
+        ]
+
         st.session_state.climate_mode = st.selectbox(
-            "Climate / AC Operating Mode",
-            [
-                "Normal Mode",
-                "Cooling Mode",
-                "Heating Mode"
-            ],
-            index=["Normal Mode", "Cooling Mode", "Heating Mode"].index(st.session_state.climate_mode)
+            "Operating Climate",
+            climate_options,
+            index=climate_options.index(st.session_state.climate_mode)
+            if st.session_state.climate_mode in climate_options else 0
         )
 
-    st.info(
-        "In Cooling or Heating Mode, the system tries to preserve at least one AC if possible."
-    )
+    if st.session_state.climate_mode == "Hot Summer - Cooling Priority":
+        st.info("Cooling priority is active. The system will try to preserve at least one AC if possible.")
+    elif st.session_state.climate_mode == "Cold Winter - Heating Priority":
+        st.info("Heating priority is active. The system will try to preserve at least one water heater if possible.")
+    else:
+        st.info("Normal operation is active. No seasonal preservation is automatically added.")
 
     st.subheader("Edit Appliance Priority and Connection Status")
 
@@ -1328,8 +1520,8 @@ if page == "Smart Meter Override Page":
             "Connected": st.column_config.CheckboxColumn("Connected"),
             "Disconnectable": st.column_config.CheckboxColumn("Disconnectable"),
             "Critical": st.column_config.CheckboxColumn("Critical"),
-            "User Priority": st.column_config.NumberColumn("User Priority", step=1),
-            "Company Priority": st.column_config.NumberColumn("Company Priority", step=1),
+            "User Priority": st.column_config.NumberColumn("User Priority", min_value=1, step=1),
+            "Company Priority": st.column_config.NumberColumn("Company Priority", min_value=1, step=1),
             "Preserve Minimum Units": st.column_config.NumberColumn("Preserve Minimum Units", min_value=0, step=1)
         }
     )
@@ -1388,7 +1580,7 @@ st.warning(
 st.markdown("""
 <div class="scada-card">
 <div class="big-status">Integrated Operating Scenario</div>
-This dashboard combines historical baseline estimation, dynamic tariffs, manual smart meter override,
+This dashboard combines historical baseline calculation, dynamic tariffs, manual smart meter override,
 priority-based load shedding, mandatory grid protection, and premium uninterrupted consumption pricing.
 </div>
 """, unsafe_allow_html=True)
@@ -1506,8 +1698,8 @@ with col2:
         default_size=220
     )
 
-baseline_a = predict_baseline_unlimited(model, person_a)
-baseline_b = predict_baseline_unlimited(model, person_b)
+baseline_a = float(model.predict(person_a.astype(float))[0])
+baseline_b = float(model.predict(person_b.astype(float))[0])
 
 
 # =========================================================
@@ -1515,17 +1707,17 @@ baseline_b = predict_baseline_unlimited(model, person_b)
 # =========================================================
 
 st.divider()
-st.header("Estimated Historical Baselines")
+st.header("Historical Consumption Baselines")
 
 m1, m2, m3 = st.columns(3)
 
 m1.metric(
-    "Estimated Historical Baseline - Person A",
+    "Historical Baseline - Person A",
     f"{baseline_a:.2f} kWh"
 )
 
 m2.metric(
-    "Estimated Historical Baseline - Person B",
+    "Historical Baseline - Person B",
     f"{baseline_b:.2f} kWh"
 )
 
@@ -1662,6 +1854,13 @@ if new_company_growth_mode and not grid_stress:
         "Users above the average may receive a bonus instead of penalty."
     )
 
+if climate_mode == "Hot Summer - Cooling Priority":
+    st.info("Climate Mode: Hot summer cooling priority. AC protection is applied when possible.")
+elif climate_mode == "Cold Winter - Heating Priority":
+    st.info("Climate Mode: Cold winter heating priority. Water heater protection is applied when possible.")
+else:
+    st.info("Climate Mode: Normal operation. No automatic seasonal equipment protection.")
+
 st.markdown("""
 ### Tariff Name
 
@@ -1679,7 +1878,7 @@ st.header("Billing & Condition Results")
 
 billing_df = pd.DataFrame([{
     "Client": selected_person,
-    "Historical Baseline kWh": selected_baseline,
+    "Baseline kWh": selected_baseline,
     "Requested Usage kWh": requested_usage,
     "Final Usage kWh": final_usage,
     "Normal Usage kWh": billing["Normal Usage kWh"],
@@ -1759,7 +1958,7 @@ with tab2:
     usage_fig = go.Figure()
 
     usage_fig.add_trace(go.Bar(
-        x=["Historical Baseline", "Requested Usage", "Final Usage"],
+        x=["Baseline", "Requested Usage", "Final Usage"],
         y=[selected_baseline, requested_usage, final_usage],
         marker_color=["yellow", "orange", "lime"],
         text=[
@@ -1771,7 +1970,7 @@ with tab2:
     ))
 
     usage_fig.update_layout(
-        title="Historical Baseline vs Requested vs Final Usage",
+        title="Baseline vs Requested vs Final Usage",
         xaxis_title="Condition",
         yaxis_title="kWh",
         template="plotly_dark",
