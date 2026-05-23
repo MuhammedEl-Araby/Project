@@ -1255,7 +1255,7 @@ The random term makes the simulation more realistic.
 
 ## Confidential Baseline Idea
 
-In a real system, the baseline should not be shown as "AI prediction" to the customer.
+In a real system, the baseline should not be shown as "Prediction" to the customer.
 
 A better operational name is:
 
